@@ -34,20 +34,6 @@ chrome.runtime.onMessage.addListener(async (message) => {
   }
 });
 
-// document.addEventListener("DOMContentLoaded", () => {
-//   const container = document.createElement("div");
-//   document.body.appendChild(container);
-
-//   // 首次加载数据
-//   chrome.storage.local.get("elementData", ({ elementData }) => {
-//     if (elementData) {
-//       renderElements(elementData);
-//     } else {
-//       container.textContent = "正在加载数据...";
-//     }
-//   });
-// });
-// popup.js
 function renderElements(data) {
   const container = document.querySelector("div");
 
@@ -116,13 +102,21 @@ function renderElements(data) {
   // 在renderElements函数末尾添加
   container.addEventListener("change", (e) => {
     if (e.target.classList.contains("color-editor")) {
-      const selector = e.target.dataset.selector;
+      const originalSelector = e.target.dataset.selector;
       const newColor = e.target.value;
+
+      // 验证选择器有效性
+      try {
+        document.querySelector(originalSelector);
+      } catch (error) {
+        console.warn("无效选择器，使用备用方案:", originalSelector);
+        return;
+      }
 
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         chrome.tabs.sendMessage(tabs[0].id, {
           action: "updateStyle",
-          selector: selector,
+          selector: originalSelector,
           property: "backgroundColor",
           value: newColor,
         });
@@ -278,13 +272,23 @@ function rgbToHex(rgb) {
   );
 }
 
-// 新增选择器生成函数
+// 修改getSelector函数
 function getSelector(type, value) {
-  return type === "class"
-    ? `.${value}`
-    : type === "id"
-    ? `#${value}`
-    : type === "style"
-    ? `[style*="${value}"]`
-    : "";
+  const sanitizeValue = (val) => {
+    // 移除可能破坏选择器的特殊字符
+    return CSS.escape(val.replace(/['"`]/g, "").split(";")[0].trim());
+  };
+
+  switch (type) {
+    case "class":
+      return `.${sanitizeValue(value)}`;
+    case "id":
+      return `#${sanitizeValue(value)}`;
+    case "style":
+      // 使用精确匹配单个样式属性
+      const [prop, val] = value.split(":").map((s) => s.trim());
+      return `[style*="${CSS.escape(prop)}: ${CSS.escape(val)}"]`;
+    default:
+      return "";
+  }
 }

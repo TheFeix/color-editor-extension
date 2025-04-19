@@ -1,9 +1,16 @@
 // background.js
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getTabId") {
-    sendResponse({ tabId: sender.tab.id });
+    try {
+      if (!sender.tab?.id) throw new Error("无效的标签页");
+      sendResponse({ tabId: sender.tab.id });
+    } catch (error) {
+      console.error("获取Tab ID失败:", error);
+      sendResponse({ tabId: `fallback_${Date.now()}` });
+    }
+    return true;
   }
-  return true; // 保持通道开放
+  return false;
 });
 
 let currentTabId = null;
