@@ -1,26 +1,62 @@
+let currentTabId = null;
+
 // popup.js
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // if (message.action === "dataUpdated") {
+  //   // 从存储获取最新数据
+  //   // chrome.storage.local.get("elementData", (data) => {
+  //   //   console.log("数据已更新data: ", data);
+  //   //   renderElements(data);
+  //   // });
+  //   // 修改为直接访问存储键值
+  //   chrome.storage.local.get(null, (allData) => {
+  //     const tabData = allData[`elementData_${currentTabId}`] || [];
+  //     renderElements(tabData);
+  //   });
+  // }
   if (message.action === "dataUpdated") {
-    // 从存储获取最新数据
-    chrome.storage.local.get("elementData", (data) => {
-      console.log("数据已更新data: ", data);
-      renderElements(data.elementData);
+    // 动态获取当前标签页ID
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+      currentTabId = tab?.id || currentTabId;
+      chrome.storage.local.get(null, (allData) => {
+        const tabData = allData[`elementData_${currentTabId}`] || [];
+        renderElements(tabData);
+      });
     });
   }
   return true;
 });
 
+// async function getCurrentTabData() {
+// const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+// return new Promise((resolve) => {
+//   chrome.storage.local.get(`elementData_${tab.id}`, (data) => {
+//     resolve(data[`elementData_${tab.id}`] || []);
+//   });
+// });
+// }
+// 修改getCurrentTabData函数
 async function getCurrentTabData() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return new Promise((resolve) => {
     chrome.storage.local.get(`elementData_${tab.id}`, (data) => {
-      resolve(data[`elementData_${tab.id}`] || []);
+      // 确保始终返回数组
+      const result = Array.isArray(data[`elementData_${tab.id}`])
+        ? data[`elementData_${tab.id}`]
+        : [];
+      resolve(result);
     });
   });
 }
 
 // 修改所有数据获取逻辑
 document.addEventListener("DOMContentLoaded", async () => {
+  // const data = await getCurrentTabData();
+  // console.log("data: ", data);
+  // renderElements(data);
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  currentTabId = tab.id; // 存储当前标签页ID
+
   const data = await getCurrentTabData();
   console.log("data: ", data);
   renderElements(data);
@@ -34,261 +70,206 @@ chrome.runtime.onMessage.addListener(async (message) => {
   }
 });
 
+// 新增样式分组函数
+function groupByComputedStyle(data) {
+  // 添加数组验证
+  if (!Array.isArray(data)) {
+    console.error("Invalid data format:", data);
+    return [];
+  }
+  const styleGroups = new Map();
+
+  data.forEach((item) => {
+    const styleKey = [
+      item.computedStyle.backgroundColor,
+      item.computedStyle.color,
+      item.computedStyle.fontSize,
+      item.computedStyle.fontFamily,
+    ].join("|");
+
+    if (!styleGroups.has(styleKey)) {
+      styleGroups.set(styleKey, {
+        style: { ...item.computedStyle },
+        elements: {
+          tags: new Set(),
+          texts: new Set(),
+          uids: new Set(),
+        },
+      });
+    }
+
+    const group = styleGroups.get(styleKey);
+    group.elements.tags.add(item.tag);
+    group.elements.texts.add(item.text);
+    group.elements.uids.add(item.uid);
+  });
+
+  return Array.from(styleGroups.values());
+}
+
+// 修改renderElements函数
 function renderElements(data) {
   const container = document.querySelector("div");
+  const styleGroups = groupByComputedStyle(data);
 
-  // 分类处理（新增分组逻辑）
-  const categories = data.reduce(
-    (acc, el) => {
-      const key = el.attributes.id
-        ? "id"
-        : el.attributes.class
-        ? "class"
-        : el.attributes.style
-        ? "style"
-        : "other";
-      acc[key].push(el);
-      return acc;
-    },
-    { style: [], class: [], id: [], other: [] }
-  );
-  // console.log("categories: ", categories);
-
-  // 生成分类HTML（修改后的结构）
   container.innerHTML = `
-    <input type="text" class="search-box" placeholder="搜索属性或文本...">
-    ${createCategorySection(
-      "Class定义",
-      groupElements(categories.class, "class"),
-      "class"
-    )}
-    ${createCategorySection("ID元素", groupElements(categories.id, "id"), "id")}
-    ${createCategorySection(
-      "内联样式",
-      groupElements(categories.style, "style"),
-      "style"
-    )}
-    ${createCategorySection("其他元素", categories.other, "other")}
-  `;
-  // 实现实时过滤
-  // 将事件监听移到此处（确保元素已存在）
-  container.querySelector(".search-box").addEventListener("input", (e) => {
-    const keyword = e.target.value.toLowerCase();
-    document.querySelectorAll(".group-card").forEach((card) => {
-      const matches = card.textContent.toLowerCase().includes(keyword);
-      card.style.display = matches ? "block" : "none";
-    });
-  });
-
-  // 修改点击事件监听逻辑
-  container.addEventListener("click", (e) => {
-    if (e.target.closest(".group-header")) {
-      const header = e.target.closest(".group-header");
-      const textList = header.nextElementSibling;
-
-      // 更精确的初始状态判断
-      const isCollapsed =
-        !textList.style.maxHeight ||
-        textList.style.maxHeight === "0px" ||
-        parseFloat(getComputedStyle(textList).maxHeight) < 10;
-
-      header.setAttribute("aria-expanded", isCollapsed);
-      textList.style.maxHeight = isCollapsed
-        ? `${textList.scrollHeight}px`
-        : "0";
-    }
-  });
-
-  // 在renderElements函数末尾添加
-  container.addEventListener("change", (e) => {
-    if (e.target.classList.contains("color-editor")) {
-      const originalSelector = e.target.dataset.selector;
-      const newColor = e.target.value;
-
-      // 验证选择器有效性
-      try {
-        document.querySelector(originalSelector);
-      } catch (error) {
-        console.warn("无效选择器，使用备用方案:", originalSelector);
-        return;
-      }
-
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          action: "updateStyle",
-          selector: originalSelector,
-          property: "backgroundColor",
-          value: newColor,
-        });
-      });
-    }
-  });
-}
-
-// 新增分组函数
-function groupElements(elements, type) {
-  const groups = new Map();
-
-  elements.forEach((el) => {
-    const key = el.attributes[type] || "未命名";
-    console.log("key: ", key);
-    // console.log("!groups.has(key): ", !groups.has(key));
-    if (!groups.has(key)) {
-      groups.set(key, {
-        attribute: key,
-        computedStyle: el.computedStyle,
-        tag: el.tag,
-        texts: new Set(), // 使用Set自动去重
-      });
-    }
-    if (el.text) groups.get(key).texts.add(el.text);
-  });
-
-  // console.log("groups.values: ", groups.values());
-  return Array.from(groups.values());
-}
-
-// 修改后的分类区块生成函数
-function createCategorySection(title, items, type) {
-  // console.log("title: ", title);
-  // console.log("items: ", items);
-  // console.log("type: ", type);
-  if (items.length === 0) return "";
-
-  return `
-    <section class="category-section">
-      <h3 class="category-title">${title} (${items.length})</h3>
-      <div class="category-content">
-        ${
-          type === "other"
-            ? items.map((el) => createSingleCard(el)).join("")
-            : items.map((item) => createGroupCard(item, type)).join("")
-        }
-      </div>
-    </section>
-  `;
-}
-
-// 新增分组卡片生成函数
-function createGroupCard(item, type) {
-  // console.log("createGroupCard-item: ", item);
-  // console.log("createGroupCard-type: ", type);
-  return `
-    <div class="group-card">
-      <div class="group-header">
-        <span class="type-tag">${type}:</span>
-        <span class="attribute-value">${item.attribute}</span>
-      </div>
-      <div class="text-list">
-        ${Array.from(item.texts)
-          .map(
-            (text) => `
-          <div class="text-item" style="color: ${item.computedStyle.color}">${text}</div>
-        `
-          )
-          .join("")}
-      </div>
-
-      <div class="style-info">
-        <div class="color-box" style="background:${
-          item.computedStyle.backgroundColor
-        }"></div>
-        <span>${item.computedStyle.color.replace("rgb", "RGB")}</span>
-      </div>
-      <div class="font-info"style="font-size: ${
-        item.computedStyle.fontSize
-      };font-family: ${item.computedStyle.fontFamily}.replace(/\"/g,'')">
-        <span>${item.computedStyle.fontSize}</span>
-        <span>${item.computedStyle.fontFamily.replace(/\"/g, "")}</span>
-      </div>
-    </div>
-  `;
-}
-
-// 保留原有单元素卡片函数
-function createSingleCard(item) {
-  // console.log("item: ", item);
-  return `
-    <div class="group-card">
-      <div class="element-header">
-        <span class="tag">${item.tag}</span>
-        ${
-          item.attributes.id
-            ? `<span class="id-tag">#${item.attributes.id}</span>`
-            : ""
-        }
-      </div>
-      ${
-        item.text !== "无文本内容"
-          ? `
-        <div class="text-preview" style="color: ${item.computedStyle.color}">${item.text}</div>
+    <div class="style-groups">
+      ${styleGroups
+        .map(
+          (group) => `
+        <div class="style-group">
+          <div class="style-preview" style="
+            background: ${group.style.backgroundColor};
+            color: ${group.style.color};
+            font-size: ${group.style.fontSize};
+            font-family: ${group.style.fontFamily}
+          ">
+            ${Array.from(group.elements.texts).join(" ")}
+          </div>
+          
+          <div class="style-controls">
+            <div class="control-item">
+              <label>背景色</label>
+              <input type="color" 
+                     data-prop="backgroundColor" 
+                     value="${rgbToHex(group.style.backgroundColor)}">
+            </div>
+            
+            <div class="control-item">
+              <label>文字色</label>
+              <input type="color" 
+                     data-prop="color" 
+                     value="${rgbToHex(group.style.color)}">
+            </div>
+            
+            <div class="control-item">
+              <label>字号(px)</label>
+              <input type="number" 
+                     data-prop="fontSize" 
+                     value="${parseInt(group.style.fontSize)}"
+                     min="8" max="72">
+            </div>
+            
+            <div class="control-item">
+              <label>字体</label>
+              <select data-prop="fontFamily">
+                ${getFontOptions(group.style.fontFamily)}
+              </select>
+            </div>
+          </div>
+          
+          <div class="element-info">
+            <div class="tags">标签: ${Array.from(group.elements.tags).join(
+              ", "
+            )}</div>
+            <div class="texts">样例文本: "${Array.from(group.elements.texts)
+              .slice(0, 3)
+              .join('", "')}"</div>
+          </div>
+        </div>
       `
-          : `
-        <div class="empty-text">该元素无文本内容</div>
-      `
-      }
-      
-      <div class="style-info">
-        <div class="color-box" style="background:${
-          item.computedStyle.backgroundColor
-        }"></div>
-        <span>${item.computedStyle.color.replace("rgb", "RGB")}</span>
-      </div>
-      <div class="font-info" style="font-size: ${
-        item.computedStyle.fontSize
-      };font-family: ${item.computedStyle.fontFamily}.replace(/\"/g,'')">
-        <span>${item.computedStyle.fontSize}</span>
-        <span>${item.computedStyle.fontFamily.replace(/\"/g, "")}</span>
-      </div>
+        )
+        .join("")}
     </div>
   `;
+
+  // 添加事件监听
+  container.querySelectorAll("input, select").forEach((control) => {
+    control.addEventListener("change", handleStyleChange);
+  });
 }
 
-// 修改createGroupCard函数中的颜色展示部分
-function createGroupCard(item, type) {
-  return `
-    <div class="group-card">
-      <div class="style-info">
-        <input type="color" 
-               class="color-editor" 
-               value="${rgbToHex(item.computedStyle.backgroundColor)}"
-               data-selector="${getSelector(type, item.attribute)}">
-        <span>${item.computedStyle.color}</span>
-      </div>
-    </div>
-  `;
+// 新增字体选项生成函数
+function getFontOptions(currentFont) {
+  const fonts = [
+    "Arial",
+    "Helvetica",
+    "Verdana",
+    "Times New Roman",
+    "SimSun",
+    "Microsoft YaHei",
+    "JetBrains Mono",
+    "HarmonyOS Sans SC",
+  ];
+  return fonts
+    .map(
+      (font) => `
+    <option value="${font}" ${currentFont.includes(font) ? "selected" : ""}>
+      ${font}
+    </option>
+  `
+    )
+    .join("");
 }
 
-// 新增颜色转换函数
+// 添加颜色转换函数
 function rgbToHex(rgb) {
   if (!rgb) return "#000000";
+
+  // 处理不同格式的RGB值
   const values = rgb.match(/\d+/g) || [0, 0, 0];
-  return (
-    "#" +
-    values
-      .slice(0, 3)
-      .map((x) => parseInt(x).toString(16).padStart(2, "0"))
-      .join("")
-  );
+  const hex = values
+    .slice(0, 3) // 忽略透明度
+    .map((x) => parseInt(x).toString(16).padStart(2, "0"))
+    .join("");
+
+  return `#${hex}`.toUpperCase();
 }
 
-// 修改getSelector函数
-function getSelector(type, value) {
-  const sanitizeValue = (val) => {
-    // 移除可能破坏选择器的特殊字符
-    return CSS.escape(val.replace(/['"`]/g, "").split(";")[0].trim());
-  };
+async function handleStyleChange(e) {
+  const control = e.target;
+  const group = control.closest(".style-group");
+  const selector = generateSelector(group);
+  const prop = control.dataset.prop;
+  const value =
+    control.type === "number" ? `${control.value}px` : control.value;
 
-  switch (type) {
-    case "class":
-      return `.${sanitizeValue(value)}`;
-    case "id":
-      return `#${sanitizeValue(value)}`;
-    case "style":
-      // 使用精确匹配单个样式属性
-      const [prop, val] = value.split(":").map((s) => s.trim());
-      return `[style*="${CSS.escape(prop)}: ${CSS.escape(val)}"]`;
-    default:
-      return "";
+  // 更新预览
+  group.querySelector(".style-preview").style[prop] = value;
+
+  // 发送到页面
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  // chrome.tabs.sendMessage(tab.id, {
+  //   action: "updateStyle",
+  //   selector: selector,
+  //   property: prop,
+  //   value: value,
+  // });
+  try {
+    await new Promise((resolve) => {
+      chrome.tabs.sendMessage(
+        tab.id,
+        {
+          action: "updateStyle",
+          selector: selector,
+          property: prop,
+          value: value,
+        },
+        resolve
+      );
+    });
+  } catch (error) {
+    console.error("消息发送失败:", error);
   }
+}
+
+// 新增选择器生成函数
+function generateSelector(group) {
+  const uids = Array.from(group.querySelectorAll("[data-uid]"))
+    .map((el) => `[data-uid="${el.dataset.uid}"]`)
+    .join(",");
+  return uids || "body";
+}
+// 添加颜色转换函数
+function rgbToHex(rgb) {
+  if (!rgb) return "#000000";
+
+  // 处理不同格式的RGB值
+  const values = rgb.match(/\d+/g) || [0, 0, 0];
+  const hex = values
+    .slice(0, 3) // 忽略透明度
+    .map((x) => parseInt(x).toString(16).padStart(2, "0"))
+    .join("");
+
+  return `#${hex}`.toUpperCase();
 }

@@ -1,27 +1,52 @@
 // 添加数据更新监听
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-
   if (request.action === "refreshData") {
     collectAttributes();
   }
+  // if (request.action === "updateStyle") {
+  //   try {
+  //     document.querySelectorAll(request.selector).forEach((element) => {
+  //       element.style[request.property] = request.value;
+  //     });
+  //   } catch (error) {
+  //     console.error("无效选择器:", request.selector, error);
+  //     // 回退到类名选择器
+  //     const fallbackSelector = `.${CSS.escape(request.selector)}`;
+  //     document.querySelectorAll(fallbackSelector).forEach((element) => {
+  //       element.style[request.property] = request.value;
+  //     });
+  //   }
+  //   collectAttributes();
+  // }
+  // 修改样式更新逻辑
   if (request.action === "updateStyle") {
+    observer.disconnect();
     try {
       document.querySelectorAll(request.selector).forEach((element) => {
-        element.style[request.property] = request.value;
+        element.style.setProperty(request.property, request.value, "important");
       });
     } catch (error) {
-      console.error("无效选择器:", request.selector, error);
-      // 回退到类名选择器
-      const fallbackSelector = `.${CSS.escape(request.selector)}`;
-      document.querySelectorAll(fallbackSelector).forEach((element) => {
-        element.style[request.property] = request.value;
-      });
+      console.error("样式更新失败:", error);
     }
-    collectAttributes();
+    // 优化后的重新采集逻辑
+    // setTimeout(() => {
+    //   collectAttributes().then(() => {
+    //     chrome.runtime.sendMessage({ action: "dataUpdated" });
+    //   });
+    // }, 200);
+    // 延迟确保样式应用完成
+    setTimeout(async () => {
+      await collectAttributes();
+      // 重新开始监听
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+      chrome.runtime.sendMessage({ action: "dataUpdated" });
+    }, 100); // 调整延迟时间为100ms
   }
   return true;
 });
-
 
 function getFullComputedStyle(element) {
   const style = window.getComputedStyle(element);
@@ -31,30 +56,50 @@ function getFullComputedStyle(element) {
   }, {});
 }
 
-// let currentTabId;
-let currentTabId = chrome.devtools?.inspectedWindow?.tabId; // 备用方案
+let currentTabId;
 // 在setTimeout前锁定当前tabId
 const tabIdToStore = currentTabId;
 
 async function initializeTabId() {
-  return new Promise((resolve) => {
-    // 如果已有有效ID直接返回
-    if (currentTabId && currentTabId !== "undefined") {
-      return resolve();
-    }
+  // return new Promise((resolve) => {
+  //   // 如果已有有效ID直接返回
+  //   if (currentTabId && currentTabId !== "undefined") {
+  //     return resolve();
+  //   }
 
-    // 优先尝试从chrome.tabs获取
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        currentTabId = tabs[0].id;
+  //   // 优先尝试从chrome.tabs获取
+  //   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  //     if (tabs[0]?.id) {
+  //       currentTabId = tabs[0].id;
+  //       return resolve();
+  //     }
+
+  //     // 备用方案
+  //     chrome.runtime.sendMessage({ action: "getTabId" }, (response) => {
+  //       currentTabId =
+  //         response?.tabId || Math.random().toString(36).slice(2, 9);
+  //       resolve();
+  //     });
+  //   });
+  // });
+  return new Promise((resolve) => {
+    // 优先从runtime消息获取
+    chrome.runtime.sendMessage({ action: "getTabId" }, (response) => {
+      if (response?.tabId) {
+        currentTabId = response.tabId;
         return resolve();
       }
 
-      // 备用方案
-      chrome.runtime.sendMessage({ action: "getTabId" }, (response) => {
-        currentTabId =
-          response?.tabId || Math.random().toString(36).slice(2, 9);
-        resolve();
+      // 备用方案：使用chrome.tabs API
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          currentTabId = tabs[0].id;
+          resolve();
+        } else {
+          // 最终回退方案
+          currentTabId = `fallback_${Date.now()}`;
+          resolve();
+        }
       });
     });
   });
@@ -64,11 +109,11 @@ chrome.runtime.sendMessage({ action: "getTabId" }, (response) => {
   currentTabId = response.tabId;
 });
 async function collectAttributes() {
+  await initializeTabId();
   if (!currentTabId) {
     console.warn("无法获取tabId，使用备用方案");
     currentTabId = Math.random().toString(36).slice(2, 9);
   }
-  await initializeTabId();
   const results = [];
 
   // 在元素遍历前统一获取所有样式
@@ -92,11 +137,22 @@ async function collectAttributes() {
       // 可添加其他需要关注的样式属性
     };
     // console.log("getFullCS", getFullComputedStyle(computedStyle));
+    // results.push({
+    //   tag: element.tagName,
+    //   attributes: attributes,
+    //   computedStyle: styleDetails, // 新增样式字段
+    //   text: element.textContent?.trim().slice(0, 50) || "无文本内容", // 截取前50字符
+    // });
+    // 修改collectAttributes函数中的results.push部分
     results.push({
-      tag: element.tagName,
+      tag: element.tagName.toLowerCase(),
       attributes: attributes,
-      computedStyle: styleDetails, // 新增样式字段
-      text: element.textContent?.trim().slice(0, 50) || "无文本内容", // 截取前50字符
+      computedStyle: styleDetails,
+      text: element.textContent?.trim().slice(0, 50) || "无文本内容",
+      // 新增唯一标识符
+      uid: `${element.tagName}-${Array.from(element.attributes)
+        .map((attr) => `${attr.name}=${attr.value}`)
+        .join("-")}`,
     });
   });
 
@@ -106,29 +162,34 @@ async function collectAttributes() {
   );
   // console.log("results: ", results);
   console.log("uniqueResults: ", uniqueResults);
-  setTimeout(async () => {
-    // 确保使用最新的currentTabId
-    const targetTabId = currentTabId || Math.random().toString(36).slice(2, 9);
 
-    try {
-      await chrome.storage.local.set({
-        [`elementData_${targetTabId}`]: uniqueResults,
-      });
-      console.log(`数据已存储到标签页${targetTabId}`);
-      // chrome.runtime.sendMessage({ action: "dataUpdated" });
-    } catch (error) {
-      console.error("存储失败:", error);
-    }
-  }, 300);
+  // 确保存储的是有效数组
+  if (!Array.isArray(uniqueResults)) {
+    console.error("Invalid data format:", uniqueResults);
+    return;
+  }
+
+  // 确保使用最新的currentTabId
+  const targetTabId = currentTabId || Math.random().toString(36).slice(2, 9);
+
+  try {
+    await chrome.storage.local.set({
+      [`elementData_${targetTabId}`]: uniqueResults,
+    });
+    // chrome.runtime.sendMessage({ action: "dataUpdated" }
+    // chrome.runtime.sendMessage({ action: "dataUpdated" });
+  } catch (error) {
+    console.error("存储失败:", error);
+  }
 }
 
 // 执行采集
 collectAttributes();
 
 let updateTimer;
-// 使用MutationObserver监控新增元素
+// 使用MuIntervalbserver监控新增元素
 const observer = new MutationObserver((mutations) => {
-  clearInterval(updateTimer);
+  clearTimeout(updateTimer);
   updateTimer = setTimeout(() => {
     collectAttributes(); // 重新采集数据
     chrome.runtime.sendMessage({ action: "dataUpdated" });
